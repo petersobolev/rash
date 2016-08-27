@@ -3,7 +3,7 @@ Rash by Frog //ROi<br>
 256 bytes intro for Philips Videopac<br>
 Released at Chaos Constructions'2016<br>
 <p>
-![Alt text](https://raw.githubusercontent.com/petersobolev/rash/master/screenshot_300.jpg "Screenshot")
+![Alt text](https://github.com/petersobolev/rash/raw/master/screenshot_300.jpg "Screenshot")
 <p>
 Platform: Philips Videopac home computer (PAL)<br>
 It should work on Magnavox Odyssey 2 (NTSC) with some side effects
