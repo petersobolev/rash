@@ -1,0 +1,331 @@
+;
+; Rash - 256 bytes intro by Frog / ROi
+; for Philips Videopac PAL (MCS-48 assembler).
+; released at Chaos Constructions'2016 tiny intro compo
+; http://www.pouet.net/prod.php?which=68024
+;
+; Use ASW 1.42 to compile and hardware or emulator (o2em with -euro option) to run
+;
+; It should run on Magnavox Odyssey 2 but with some side effects (because of NTSC timings)
+;
+
+	cpu	8048
+	org	400h
+
+	include	"g7000.h"
+
+; internal RAM vars
+chars_buf		equ		020h ; start chars control buffer
+char_regs_cur		equ		010h ; addr of current VDC char group regs
+counter			equ		011h ; global frame counter
+sprite_x		equ		012h ; sprites X coord
+; distance between falling chars
+hstep			equ		14
+
+	jmp		selectgame		; RESET
+	jmp		irq				; interrupt
+	jmp		timer			; timer
+	jmp		vsyncirq		; VSYNC-interrupt
+	jmp		start			; after selectgame
+	jmp		soundirq		; sound-interrupt
+
+timer
+	ret 					; no timer needed
+
+
+start
+
+	call		gfxoff
+
+; GRID
+
+	; main background and grid colors
+	mov		r0,#vdc_color
+	mov		a,#col_bck_black | col_grd_yellow	; background | grid
+	movx		@r0,a
+
+	; set block fill mode for grid
+	mov		r0,#vdc_control
+;	movx		a,@r0
+;	orl		a,#vdc_ctrl_fill
+	mov		a,#vdc_ctrl_fill
+	movx		@r0,a
+
+; sprite 0
+	mov 		r0,#vdc_spr0_ctrl	; spr0 Y
+	mov 		a,#220
+	movx 		@r0,a
+
+; sprite 1
+	mov 		r0,#vdc_spr1_ctrl	; spr1 Y
+	movx 		@r0,a
+
+; copy char params from program ROM to internal RAM
+
+	mov		r2,#12*2
+	mov		r1,#chars_init & 0ffh	; must be in the same page (b2)
+	mov		r0,#chars_buf
+
+; copy x,y data for every char from ROM to intRAM
+
+nextchar:
+	mov		a,r1
+	movp		a,@a			; get char
+	mov		@r0,a
+	inc		r0
+	inc		r1
+	djnz		r2,nextchar
+
+
+; ------------------------------------------------------------------------
+main_loop:
+
+	call		waitvsync		; wait for begin of frame
+
+;	call		vdcenable	; enable vdc
+
+	mov		r0,#vdc_collision
+	mov		a,#vdc_coll_spr0
+	movx		@r0,a			; activate collision checks
+
+
+	call 		gfxoff
+
+
+	mov		r7,#chars_buf
+
+	mov		a,#vdc_char0
+	mov		r0,#char_regs_cur
+	mov		@r0,a
+
+
+; change chars Y in intRAM
+
+	mov		r0,#chars_buf
+
+	mov		r2,#12	; 12 chars
+nextchar3:
+	inc		r0
+	inc		@r0		; inc Y
+
+	mov		a,r2
+	jb0		donotaccel
+	inc		@r0		; inc Y again (move some chars faster than others)
+donotaccel:
+
+	inc		r0
+
+	djnz		r2,nextchar3
+
+
+; print every char (falling people) to x,y stored in intRAM
+nextchar2:
+	mov		a,r7
+	mov		r0,a
+
+	mov		a,@r0
+	mov		r3,a			; x
+	inc		r0
+	mov		a,@r0
+	mov		r4,a			; y
+	mov		a,r7
+	mov		r6,a 			; color
+
+	mov		r5,#03ah		; char1
+	jb1		char1
+	mov		r5,#033h		; char2
+char1:
+	jb2		char2
+	mov		r5,#034h		; char3
+char2:
+
+	mov		r1,#char_regs_cur		; addr of current VDC char group regs
+	mov		a,@r1
+
+	mov		@r1,a
+	mov		r0,a
+	add		a,#4					; next VDC char group of regs
+	mov		@r1,a
+
+	call		printchar				; print it
+
+	inc		r7						; next pair of X,Y coords
+	inc		r7
+
+	mov		a,r7
+	xrl		a,#chars_buf+(12*2)	; repeat until put all 12 chars on screen
+	jnz		nextchar2
+
+
+; GRID STUFF
+
+	mov		r1,#counter
+	mov		a,@r1
+
+	jb4		skipgridupdate		; slow down grid updates
+
+	orl		a,#00000111b	; some smart algorithm for grid blocks patterns, part I
+	xrl		a,#0a1h
+	swap		a
+	rl		a
+
+	mov		r0,#0e0h
+	mov		r2,#9 			; count
+
+nextvbar:
+	movx		@r0,a  			; put to vdc
+	inc		r0
+	cpl		a				; grid blocks patterns algorithm, part II
+	swap		a
+	rl		a
+	djnz		r2,nextvbar
+
+skipgridupdate:
+
+
+; CHECK SPRITE-CHARS COLLISION
+
+	mov		r0,#iram_collision		; this addr updated by BIOS
+	mov		a,@r0
+	jz		nocollisions
+
+	mov		a,#tune_shoot
+	call		playsound				; play sound in case of collision
+
+	mov		a,@r1					; counter -> a
+	rrc		a
+	da		a
+	rr		a
+	cpl		a
+	anl		a,#00111011b			; do not expand sprite (clear bit 2)
+
+; set cat color
+	mov 		r0,#vdc_spr0_ctrl+2		; spr0 color
+	movx		@r0,a
+	mov 		r0,#vdc_spr1_ctrl+2		; spr1 color
+	movx		@r0,a
+
+
+
+
+nocollisions:
+
+	inc		@r1						; inc counter
+
+	mov		a,@r1					; a = counter
+	jb5		donotmove				; stop cat sometimes
+
+	mov		r1,#sprite_x
+
+
+; MOVE SPRITE
+
+	mov		a,@r1					; @r1 = sprite_x = x
+	xrl		a,#160
+	jnz		donotwrap				; do not move cat to start position
+	mov		@r1,#1					; wrap cat
+donotwrap:
+
+	mov		a,@r1					; @r1 = sprite_x = x
+
+
+	mov 		r0,#vdc_spr1_ctrl+1		; spr1 X
+	movx 		@r0,a
+	mov 		r0,#vdc_spr0_ctrl+1		; spr0 X
+	add		a,#8					; cat's head connected to the right side of head
+	movx 		@r0,a
+
+
+	mov 		r0,#vdc_spr0_shape		; sprite 0 addr in vdc
+	mov 		r2,#spr_cat_head & 0ffh
+
+	mov		a,@r1					; a = sprite_x
+	jb1		donotchange				; pause for swapping frames (cat's legs)
+	mov 		r2,#spr_cat_head2 & 0ffh	; change shape
+donotchange:
+; load sprite 0 and 1 data
+; r0: first sprite addr in vdc
+; r2: sprite data in program ROM
+	mov		r3,#8*2			; 8 bytes per sprite, 2 sprites
+nextsprbyte:
+	mov		a,r2
+	movp		a,@a
+	movx		@r0,a			; put to vdc
+	inc		r0
+	inc		r2
+	djnz		r3,nextsprbyte
+
+
+
+	inc		@r1				; inc sprite X
+
+donotmove:
+
+	call		gfxon
+
+
+	jmp 		main_loop
+
+; ================= DATA ===================
+
+; 12 chars, initial coords (x,y)
+chars_init:
+
+	db		4,60
+	db		1*hstep,80
+	db		2*hstep,100
+	db		3*hstep,96
+	db		4*hstep,64
+	db		5*hstep,12
+	db		6*hstep,160
+	db		7*hstep,10
+	db		8*hstep,80
+	db		9*hstep,48
+	db		10*hstep,32
+	db		150,176
+
+; FRAME 1
+spr_cat_head:
+; cat's head (mirrored)
+	db		01000100b
+	db		01111100b
+	db		01010100b
+	db		11101111b
+	db		10111010b
+	db		11000110b
+	db		01111100b
+	db		00000000b
+
+spr_cat_body:
+; cat's body (mirrored)
+	db		00000001b
+	db		00000010b
+	db		11111100b
+	db		11111100b
+	db		11111100b
+	db		11111100b
+	db		01000100b
+	db		01000100b
+
+; FRAME 2
+spr_cat_head2:
+; cat's head (mirrored)
+	db		01000100b
+	db		01111100b
+	db		01010100b
+	db		11101111b
+	db		10111010b
+	db		11000110b
+	db		01111100b
+	db		00000000b
+
+spr_cat_body2:
+; cat's body (mirrored)
+	db		00000001b
+	db		00000010b
+	db		11111100b
+	db		11111100b
+	db		11111100b
+	db		11111100b
+	db		01000100b
+	db		10101010b
